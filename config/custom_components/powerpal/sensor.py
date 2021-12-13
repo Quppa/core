@@ -163,7 +163,7 @@ class PowerpalSensor(CoordinatorEntity, SensorEntity):
         self.entity_description = entity_description
 
     @property
-    def unique_id(self) -> str | None:
+    def unique_id(self) -> str:
         """Return unique ID of entity."""
         return f"{self.coordinator.cloud_id}-${self.coordinator.hardware_address}-{self.entity_description.key}"
 
@@ -215,6 +215,55 @@ async def async_setup_entry(
 
 class PowerpalHelper:
     """TODO"""
+
+    def find_devices(iface=None, timeout: float = TIMEOUT) -> list[(str, str)]:
+        scanner = btle.Scanner(iface)
+        devices = scanner.scan(timeout)
+
+        powerpal_devices: list[(str, str)] = []
+
+        for device in devices:
+            device_name = device.getValueText(9)
+
+            _LOGGER.info(
+                f"Found device: {device.addr} ({device_name}); type: {device.addrType}; RSSI: {device.rssi}; connectable: {device.connectable}; updateCount: {device.updateCount}"
+            )
+
+            if device_name and device_name.startswith("Powerpal "):
+                _LOGGER.info(
+                    f"Found Powerpal device: {device.addr}, {device.addrType}, {device.iface}, {device.rssi}, {device.connectable}, {device.updateCount}, {device.getDescription(9)}, {device.getValueText(9)}, {device.getScanData()}"
+                )
+                # return tuple of address and name
+                powerpal_devices.append((device.addr, device_name))
+
+        return powerpal_devices
+
+    def validate_device(mac: str, iface=None):
+        """Ensure specified address belongs to a Powerpal device"""
+        _LOGGER.info(f"mac: {mac}")
+
+        try:
+            peripheral = btle.Peripheral(
+                mac, addrType=btle.ADDR_TYPE_RANDOM, iface=iface
+            )
+
+            _LOGGER.info(peripheral)
+
+            service = peripheral.getServiceByUUID(POWERPAL_SERVICE)
+
+            _LOGGER.info(f"Found Powerpal service: {service.uuid}")
+
+            return True
+
+        # TODO: handle specific error
+        except Exception as ex:
+            _LOGGER.error(f"Error validating Powerpal device: {ex}")
+
+            return False
+
+        finally:
+            if peripheral:
+                peripheral.disconnect()
 
     def __init__(self, mac, pairing_code, impulse_rate):
         """Init"""
