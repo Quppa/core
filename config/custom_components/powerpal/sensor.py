@@ -1,8 +1,11 @@
 """Platform for sensor integration."""
 
 import binascii
+from re import S
 import time
 import datetime
+
+from dataclasses import dataclass
 
 from bluepy import btle
 import logging
@@ -213,6 +216,15 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+@dataclass(frozen=True)
+class PowerpalInstance:
+    mac: str
+    device_name: str
+    manufacturer_name: str
+    serial_number: str
+    firmware_revision: str
+
+
 class PowerpalHelper:
     """TODO"""
 
@@ -238,7 +250,7 @@ class PowerpalHelper:
         # bluepy.btle.BTLEDisconnectError: Device disconnected
         return powerpal_devices
 
-    def validate_device(mac: str, iface=None) -> str:
+    def validate_device(mac: str, iface=None) -> PowerpalInstance:
         """Ensure specified address belongs to a Powerpal device"""
         _LOGGER.info(f"mac: {mac}")
 
@@ -280,9 +292,11 @@ class PowerpalHelper:
                 f"generic_access_characteristics_lookup: {generic_access_characteristics_lookup}"
             )
 
-            device_name = generic_access_characteristics_lookup[
-                btle.AssignedNumbers.deviceName
-            ].read()
+            device_name = (
+                generic_access_characteristics_lookup[btle.AssignedNumbers.deviceName]
+                .read()
+                .decode("utf-8")
+            )
 
             _LOGGER.info(device_name)
 
@@ -298,25 +312,39 @@ class PowerpalHelper:
                 c.uuid: c for c in device_info_characteristics
             }
 
-            manufacturer_name = device_info_characteristics_lookup[
-                btle.AssignedNumbers.manufacturerNameString
-            ].read()
+            manufacturer_name = (
+                device_info_characteristics_lookup[
+                    btle.AssignedNumbers.manufacturerNameString
+                ]
+                .read()
+                .decode("utf-8")
+            )
 
             _LOGGER.info(manufacturer_name)
 
-            serial_number = device_info_characteristics_lookup[
-                btle.AssignedNumbers.serialNumberString
-            ].read()
+            serial_number = (
+                device_info_characteristics_lookup[
+                    btle.AssignedNumbers.serialNumberString
+                ]
+                .read()
+                .decode("utf-8")
+            )
 
             _LOGGER.info(serial_number)
 
-            firmware_revision = device_info_characteristics_lookup[
-                btle.AssignedNumbers.firmwareRevisionString
-            ].read()
+            firmware_revision = (
+                device_info_characteristics_lookup[
+                    btle.AssignedNumbers.firmwareRevisionString
+                ]
+                .read()
+                .decode("utf-8")
+            )
 
             _LOGGER.info(firmware_revision)
 
-            return device_name
+            return PowerpalInstance(
+                mac, device_name, manufacturer_name, serial_number, firmware_revision
+            )
 
         # TODO: handle specific error
         except Exception as ex:

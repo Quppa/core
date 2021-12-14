@@ -25,7 +25,7 @@ from .const import (
     REGEX_PAIRING_CODE,
 )
 
-from .sensor import PowerpalHelper
+from .sensor import PowerpalHelper, PowerpalInstance
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if manual_mac_entry:
                 mac = user_input[CONF_MAC]
             else:
-                (mac, name, _) = label_to_device(user_input[CONF_MAC])
+                (mac, _, _) = label_to_device(user_input[CONF_MAC])
                 _LOGGER.info(f"{user_input[CONF_MAC]}: {mac}")
             pairing_code = user_input[CONF_ACCESS_TOKEN]
             impulse_rate = user_input[CONF_COUNT]
@@ -166,18 +166,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.validate_pairing_code(pairing_code, errors)
 
             if not errors:
-                valid = PowerpalHelper.validate_device(mac)
+                powerpal_instance: PowerpalInstance = PowerpalHelper.validate_device(
+                    mac
+                )
 
-                if not valid:
+                if not powerpal_instance:
                     errors[CONF_MAC] = "invalid_device"
                 else:
                     self.data = {
-                        mac: mac,
-                        pairing_code: pairing_code,
-                        impulse_rate: impulse_rate,
+                        "mac": powerpal_instance.mac,
+                        "pairing_code": int(pairing_code),
+                        "impulse_rate": int(impulse_rate),
+                        "device_name": powerpal_instance.device_name,
+                        "manufacturer_name": powerpal_instance.manufacturer_name,
+                        "serial_number": powerpal_instance.serial_number,
+                        "firmware_revision": powerpal_instance.firmware_revision,
                     }
 
-                    return self.async_create_entry(title="Powerpal", data=self.data)
+                    return self.async_create_entry(
+                        title=powerpal_instance.device_name, data=self.data
+                    )
                 # self.powerpal_helper = PowerpalHelper(
                 # mac, pairing_code, impulse_rate
                 # )
