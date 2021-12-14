@@ -29,11 +29,22 @@ from .sensor import PowerpalHelper
 _LOGGER = logging.getLogger(__name__)
 
 
+def device_to_label(mac: str, name: str, rssi: int) -> str:
+    return f"{name} (RSSI: {str(rssi)}, MAC address: {mac})"
+
+
+def label_to_device(label: str) -> str:
+    pattern = re.compile(", MAC address: (?P<mac>.*)\\)$")
+    return pattern.match(label).group("mac")
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Powerpal config flow."""
 
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
+
+    devices: list[str, str, int] = []
 
     def validate_regex(self, value: str, regex: str):
         """Validate that the value is a string that matches a regex."""
@@ -77,56 +88,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             scan_devices = user_input[CONF_SCAN_DEVICES]
 
+            self.devices = []
+
             if scan_devices:
                 devices = PowerpalHelper.find_devices()
 
                 if len(devices) == 0:
                     errors["base"] = "no_devices"
-                # elif len(devices) == 1:
-                #    (device_address, device_name) = devices[0]
-                #    return await self.async_setup(
-                #        device_address=device_address, device_name=device_name
-                #    )
                 else:
-                    return await self.async_select_device(devices=devices)
+                    self.devices = devices
+                    return await self.async_step_setup()
             else:
-                return await self.async_setup()
+                return await self.async_step_setup()
 
         return self.async_show_form(
             step_id="user",
             data_schema=data_schema,
         )
 
-    async def async_select_device(
-        self, user_input=None, devices: list[(str, str)] = []
-    ):
-        """TODO"""
-
-        _LOGGER.info(f"async_select_device: {user_input}, devices: {devices}")
-
-        data_schema = vol.Schema(
-            {
-                vol.Required(CONF_MAC, default=DEFAULT_MAC): vol.In(devices),
-            }
-        )
-
-        if user_input is not None:
-            device: str = user_input[CONF_MAC]
-
-            return await self.async_setup(device=device)
-
-        return self.async_show_form(
-            step_id="select_device",
-            data_schema=data_schema,
-        )
-
-    async def async_setup(
-        self, user_input=None, device_address: str = None, device_name: str = None
-    ):
+    async def async_step_setup(self, user_input=None):
         """TODO"""
 
         _LOGGER.info(
-            f"async_setup: {user_input}, device_address: {device_address}, device_name: {device_name}"
+            f"async_setup: {user_input}"  # device_address: {device_address}, device_name: {device_name}"
         )
 
         errors = {}
@@ -137,11 +121,25 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self.hass.data.get(DOMAIN):
             return self.async_abort(reason="single_instance_allowed")
 
+        schema_entries = {}
+
+        manual_mac_entry = len(self.devices) == 0
+
+        if manual_mac_entry:
+            manual_mac_entry = True
+            schema_entries[vol.Required(CONF_MAC, default=DEFAULT_MAC)] = cv.string
+        else:
+            device_labels = [
+                device_to_label(name, mac, rssi) for (name, mac, rssi) in self.devices
+            ]
+            schema_entries[vol.Required(CONF_MAC, default=device_labels[0])] = vol.In(
+                device_labels
+            )
+
         data_schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_MAC, default=(device_address or DEFAULT_MAC)
-                ): cv.string,
+                **schema_entries,
+                # vol.Required(CONF_MAC, default=DEFAULT_MAC): cv.string,
                 vol.Required(
                     CONF_ACCESS_TOKEN, default=DEFAULT_PAIRING_CODE
                 ): cv.string,
@@ -150,7 +148,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         if user_input is not None:
-            mac = user_input[CONF_MAC]
+            if manual_mac_entry:
+                mac = user_input[CONF_MAC]
+            else:
+                mac = label_to_device(user_input[CONF_MAC])
+                _LOGGER.info(f"{user_input[CONF_MAC]}: {mac}")
             pairing_code = user_input[CONF_ACCESS_TOKEN]
             impulse_rate = user_input[CONF_COUNT]
 
@@ -179,6 +181,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     _LOGGER.exception(e)
 
         # If there is no user input or there were errors, show the form again, including any errors that were found with the input.
+        if errors:
+            _LOGGER.info(f"errors: {errors}")
+
         return self.async_show_form(
             step_id="setup",
             data_schema=data_schema,

@@ -216,11 +216,11 @@ async def async_setup_entry(
 class PowerpalHelper:
     """TODO"""
 
-    def find_devices(iface=None, timeout: float = TIMEOUT) -> list[(str, str)]:
+    def find_devices(iface=None, timeout: float = TIMEOUT) -> list[(str, str, int)]:
         scanner = btle.Scanner(iface)
         devices = scanner.scan(timeout)
 
-        powerpal_devices: list[(str, str)] = []
+        powerpal_devices: list[(str, str, int)] = []
 
         for device in devices:
             device_name = device.getValueText(9)
@@ -234,11 +234,11 @@ class PowerpalHelper:
                     f"Found Powerpal device: {device.addr}, {device.addrType}, {device.iface}, {device.rssi}, {device.connectable}, {device.updateCount}, {device.getDescription(9)}, {device.getValueText(9)}, {device.getScanData()}"
                 )
                 # return tuple of address and name
-                powerpal_devices.append((device.addr, device_name))
-
+                powerpal_devices.append((device.addr, device_name, device.rssi))
+        # bluepy.btle.BTLEDisconnectError: Device disconnected
         return powerpal_devices
 
-    def validate_device(mac: str, iface=None):
+    def validate_device(mac: str, iface=None) -> bool:
         """Ensure specified address belongs to a Powerpal device"""
         _LOGGER.info(f"mac: {mac}")
 
