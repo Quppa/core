@@ -2,6 +2,7 @@
 
 import logging
 import re
+import typing
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -33,9 +34,12 @@ def device_to_label(mac: str, name: str, rssi: int) -> str:
     return f"{name} (RSSI: {str(rssi)}, MAC address: {mac})"
 
 
-def label_to_device(label: str) -> str:
-    pattern = re.compile(", MAC address: (?P<mac>.*)\\)$")
-    return pattern.match(label).group("mac")
+def label_to_device(label: str) -> typing.Tuple[str, str, int]:
+    pattern = re.compile(
+        "^(?P<name>.*) (RSSI: (?P<rssi>.*), MAC address: (?P<mac>.*)\\)$"
+    )
+    match = pattern.match(label)
+    return (match.group("mac"), match.group("name"), int(match.group("rssi")))
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -43,6 +47,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
+
+    data = None
 
     devices: list[str, str, int] = []
 
@@ -130,7 +136,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             schema_entries[vol.Required(CONF_MAC, default=DEFAULT_MAC)] = cv.string
         else:
             device_labels = [
-                device_to_label(name, mac, rssi) for (name, mac, rssi) in self.devices
+                device_to_label(mac, name, rssi) for (mac, name, rssi) in self.devices
             ]
             schema_entries[vol.Required(CONF_MAC, default=device_labels[0])] = vol.In(
                 device_labels
@@ -151,7 +157,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if manual_mac_entry:
                 mac = user_input[CONF_MAC]
             else:
-                mac = label_to_device(user_input[CONF_MAC])
+                (mac, name, _) = label_to_device(user_input[CONF_MAC])
                 _LOGGER.info(f"{user_input[CONF_MAC]}: {mac}")
             pairing_code = user_input[CONF_ACCESS_TOKEN]
             impulse_rate = user_input[CONF_COUNT]
@@ -164,8 +170,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if not valid:
                     errors[CONF_MAC] = "invalid_device"
+                else:
+                    self.data = {
+                        mac: mac,
+                        pairing_code: pairing_code,
+                        impulse_rate: impulse_rate,
+                    }
 
-                return True
+                    return self.async_create_entry(title="Powerpal", data=self.data)
                 # self.powerpal_helper = PowerpalHelper(
                 # mac, pairing_code, impulse_rate
                 # )

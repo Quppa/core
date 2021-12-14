@@ -218,7 +218,7 @@ class PowerpalHelper:
 
     def find_devices(iface=None, timeout: float = TIMEOUT) -> list[(str, str, int)]:
         scanner = btle.Scanner(iface)
-        devices = scanner.scan(timeout)
+        devices = scanner.scan()
 
         powerpal_devices: list[(str, str, int)] = []
 
@@ -231,14 +231,14 @@ class PowerpalHelper:
 
             if device_name and device_name.startswith("Powerpal "):
                 _LOGGER.info(
-                    f"Found Powerpal device: {device.addr}, {device.addrType}, {device.iface}, {device.rssi}, {device.connectable}, {device.updateCount}, {device.getDescription(9)}, {device.getValueText(9)}, {device.getScanData()}"
+                    f"Found Powerpal device: {device.addr}, {device.addrType}, {device.iface}, {device.rssi}, {device.connectable}, {device.updateCount}, {device.getDescription(9)}, {device_name}, {device.getScanData()}"
                 )
                 # return tuple of address and name
                 powerpal_devices.append((device.addr, device_name, device.rssi))
         # bluepy.btle.BTLEDisconnectError: Device disconnected
         return powerpal_devices
 
-    def validate_device(mac: str, iface=None) -> bool:
+    def validate_device(mac: str, iface=None) -> str:
         """Ensure specified address belongs to a Powerpal device"""
         _LOGGER.info(f"mac: {mac}")
 
@@ -249,17 +249,68 @@ class PowerpalHelper:
 
             _LOGGER.info(peripheral)
 
-            service = peripheral.getServiceByUUID(POWERPAL_SERVICE)
+            services = peripheral.getServices()
 
-            _LOGGER.info(f"Found Powerpal service: {service.uuid}")
+            if POWERPAL_SERVICE not in services:
+                _LOGGER.error(f"Couldn't find Powerpal service {POWERPAL_SERVICE}")
+                return None
 
-            return True
+            # read attributes
+            generic_access_service: btle.Service = services[
+                btle.AssignedNumbers.genericAccess
+            ]
+
+            generic_access_characteristics: list[
+                btle.Characteristic
+            ] = generic_access_service.getCharacteristics()
+
+            generic_access_characteristics_lookup = {
+                c.uuid: c for c in generic_access_characteristics
+            }
+
+            device_name = generic_access_characteristics_lookup[
+                btle.AssignedNumbers.deviceName
+            ].read()
+
+            _LOGGER.log(device_name)
+
+            device_info_service: btle.Service = services[
+                btle.AssignedNumbers.deviceInformation
+            ]
+
+            device_info_characteristics: list[
+                btle.Characteristic
+            ] = device_info_service.getCharacteristics()
+
+            device_info_characteristics_lookup = {
+                c.uuid: c for c in device_info_characteristics
+            }
+
+            manufacturer_name = device_info_characteristics_lookup[
+                btle.AssignedNumbers.manufacturerNameString
+            ].read()
+
+            _LOGGER.log(manufacturer_name)
+
+            serial_number = device_info_characteristics_lookup[
+                btle.AssignedNumbers.serialNumberString
+            ].read()
+
+            _LOGGER.log(serial_number)
+
+            firmware_revision = device_info_characteristics_lookup[
+                btle.AssignedNumbers.firmwareRevisionString
+            ].read()
+
+            _LOGGER.log(firmware_revision)
+
+            return device_name
 
         # TODO: handle specific error
         except Exception as ex:
             _LOGGER.error(f"Error validating Powerpal device: {ex}")
 
-            return False
+            return None
 
         finally:
             if peripheral:
