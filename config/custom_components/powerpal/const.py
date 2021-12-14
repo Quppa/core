@@ -3,13 +3,15 @@
 # from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.backports.enum import StrEnum
 
+from bluepy import btle
+
 # SensorDeviceClass.POWER # (W/kW)
 # SensorStateClass.MEASUREMENT # The state represents a measurement in present time
 
 DOMAIN = "powerpal"
 
-POWERPAL_SERVICE = "59DAABCD-12F4-25A6-7D4F-55961DCE4205"
-BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
+POWERPAL_SERVICE = btle.UUID("59DAABCD-12F4-25A6-7D4F-55961DCE4205")
+BATTERY_SERVICE = btle.UUID("0000180f-0000-1000-8000-00805f9b34fb")
 
 
 class PowerpalCharacteristics(StrEnum):

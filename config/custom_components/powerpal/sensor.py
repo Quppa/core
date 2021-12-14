@@ -242,6 +242,8 @@ class PowerpalHelper:
         """Ensure specified address belongs to a Powerpal device"""
         _LOGGER.info(f"mac: {mac}")
 
+        peripheral = None
+
         try:
             peripheral = btle.Peripheral(
                 mac, addrType=btle.ADDR_TYPE_RANDOM, iface=iface
@@ -251,14 +253,20 @@ class PowerpalHelper:
 
             services = peripheral.getServices()
 
-            if POWERPAL_SERVICE not in services:
+            services_lookup = {s.uuid: s for s in services}
+
+            if POWERPAL_SERVICE not in services_lookup:
                 _LOGGER.error(f"Couldn't find Powerpal service {POWERPAL_SERVICE}")
                 return None
 
+            _LOGGER.info(f"genericAccess: {btle.AssignedNumbers.genericAccess}")
+
             # read attributes
-            generic_access_service: btle.Service = services[
+            generic_access_service: btle.Service = services_lookup[
                 btle.AssignedNumbers.genericAccess
             ]
+
+            _LOGGER.info(f"generic_access_service: {generic_access_service}")
 
             generic_access_characteristics: list[
                 btle.Characteristic
@@ -268,13 +276,17 @@ class PowerpalHelper:
                 c.uuid: c for c in generic_access_characteristics
             }
 
+            _LOGGER.info(
+                f"generic_access_characteristics_lookup: {generic_access_characteristics_lookup}"
+            )
+
             device_name = generic_access_characteristics_lookup[
                 btle.AssignedNumbers.deviceName
             ].read()
 
-            _LOGGER.log(device_name)
+            _LOGGER.info(device_name)
 
-            device_info_service: btle.Service = services[
+            device_info_service: btle.Service = services_lookup[
                 btle.AssignedNumbers.deviceInformation
             ]
 
@@ -290,19 +302,19 @@ class PowerpalHelper:
                 btle.AssignedNumbers.manufacturerNameString
             ].read()
 
-            _LOGGER.log(manufacturer_name)
+            _LOGGER.info(manufacturer_name)
 
             serial_number = device_info_characteristics_lookup[
                 btle.AssignedNumbers.serialNumberString
             ].read()
 
-            _LOGGER.log(serial_number)
+            _LOGGER.info(serial_number)
 
             firmware_revision = device_info_characteristics_lookup[
                 btle.AssignedNumbers.firmwareRevisionString
             ].read()
 
-            _LOGGER.log(firmware_revision)
+            _LOGGER.info(firmware_revision)
 
             return device_name
 
