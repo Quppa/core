@@ -3,7 +3,7 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 import ssl
-from unittest.mock import AsyncMock, MagicMock, call, mock_open, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, mock_open, patch
 
 import pytest
 import voluptuous as vol
@@ -12,13 +12,16 @@ from homeassistant.components import mqtt, websocket_api
 from homeassistant.components.mqtt import debug_info
 from homeassistant.components.mqtt.mixins import MQTT_ENTITY_DEVICE_INFO_SCHEMA
 from homeassistant.const import (
+    ATTR_ASSUMED_STATE,
     EVENT_HOMEASSISTANT_STARTED,
     EVENT_HOMEASSISTANT_STOP,
     TEMP_CELSIUS,
 )
+import homeassistant.core as ha
 from homeassistant.core import CoreState, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, template
+from homeassistant.helpers.entity import Entity
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
@@ -91,7 +94,7 @@ async def test_mqtt_disconnects_on_home_assistant_stop(hass, mqtt_mock):
     assert mqtt_mock.async_disconnect.called
 
 
-async def test_publish_(hass, mqtt_mock):
+async def test_publish(hass, mqtt_mock):
     """Test the publish function."""
     await mqtt.async_publish(hass, "test-topic", "test-payload")
     await hass.async_block_till_done()
@@ -136,6 +139,140 @@ async def test_publish_(hass, mqtt_mock):
         True,
     )
     mqtt_mock.reset_mock()
+
+    # test binary pass-through
+    mqtt.publish(
+        hass,
+        "test-topic3",
+        b"\xde\xad\xbe\xef",
+        0,
+        False,
+    )
+    await hass.async_block_till_done()
+    assert mqtt_mock.async_publish.called
+    assert mqtt_mock.async_publish.call_args[0] == (
+        "test-topic3",
+        b"\xde\xad\xbe\xef",
+        0,
+        False,
+    )
+    mqtt_mock.reset_mock()
+
+
+async def test_convert_outgoing_payload(hass):
+    """Test the converting of outgoing MQTT payloads without template."""
+    command_template = mqtt.MqttCommandTemplate(None, hass=hass)
+    assert command_template.async_render(b"\xde\xad\xbe\xef") == b"\xde\xad\xbe\xef"
+
+    assert (
+        command_template.async_render("b'\\xde\\xad\\xbe\\xef'")
+        == "b'\\xde\\xad\\xbe\\xef'"
+    )
+
+    assert command_template.async_render(1234) == 1234
+
+    assert command_template.async_render(1234.56) == 1234.56
+
+    assert command_template.async_render(None) is None
+
+
+async def test_command_template_value(hass):
+    """Test the rendering of MQTT command template."""
+
+    variables = {"id": 1234, "some_var": "beer"}
+
+    # test rendering value
+    tpl = template.Template("{{ value + 1 }}", hass=hass)
+    cmd_tpl = mqtt.MqttCommandTemplate(tpl, hass=hass)
+    assert cmd_tpl.async_render(4321) == "4322"
+
+    # test variables at rendering
+    tpl = template.Template("{{ some_var }}", hass=hass)
+    cmd_tpl = mqtt.MqttCommandTemplate(tpl, hass=hass)
+    assert cmd_tpl.async_render(None, variables=variables) == "beer"
+
+
+async def test_command_template_variables(hass, mqtt_mock):
+    """Test the rendering of enitity_variables."""
+    topic = "test/select"
+
+    fake_state = ha.State("select.test", "milk")
+
+    with patch(
+        "homeassistant.helpers.restore_state.RestoreEntity.async_get_last_state",
+        return_value=fake_state,
+    ):
+        assert await async_setup_component(
+            hass,
+            "select",
+            {
+                "select": {
+                    "platform": "mqtt",
+                    "command_topic": topic,
+                    "name": "Test Select",
+                    "options": ["milk", "beer"],
+                    "command_template": '{"option": "{{ value }}", "entity_id": "{{ entity_id }}", "name": "{{ name }}"}',
+                }
+            },
+        )
+        await hass.async_block_till_done()
+
+    state = hass.states.get("select.test_select")
+    assert state.state == "milk"
+    assert state.attributes.get(ATTR_ASSUMED_STATE)
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": "select.test_select", "option": "beer"},
+        blocking=True,
+    )
+
+    mqtt_mock.async_publish.assert_called_once_with(
+        topic,
+        '{"option": "beer", "entity_id": "select.test_select", "name": "Test Select"}',
+        0,
+        False,
+    )
+    mqtt_mock.async_publish.reset_mock()
+    state = hass.states.get("select.test_select")
+    assert state.state == "beer"
+
+
+async def test_value_template_value(hass):
+    """Test the rendering of MQTT value template."""
+
+    variables = {"id": 1234, "some_var": "beer"}
+
+    # test rendering value
+    tpl = template.Template("{{ value_json.id }}")
+    val_tpl = mqtt.MqttValueTemplate(tpl, hass=hass)
+    assert val_tpl.async_render_with_possible_json_value('{"id": 4321}') == "4321"
+
+    # test variables at rendering
+    tpl = template.Template("{{ value_json.id }} {{ some_var }} {{ code }}")
+    val_tpl = mqtt.MqttValueTemplate(tpl, hass=hass, config_attributes={"code": 1234})
+    assert (
+        val_tpl.async_render_with_possible_json_value(
+            '{"id": 4321}', variables=variables
+        )
+        == "4321 beer 1234"
+    )
+
+    # test with default value if an error occurs due to an invalid template
+    tpl = template.Template("{{ value_json.id | as_datetime }}")
+    val_tpl = mqtt.MqttValueTemplate(tpl, hass=hass)
+    assert (
+        val_tpl.async_render_with_possible_json_value('{"otherid": 4321}', "my default")
+        == "my default"
+    )
+
+    # test value template with entity
+    entity = Entity()
+    entity.hass = hass
+    tpl = template.Template("{{ value_json.id }}")
+    val_tpl = mqtt.MqttValueTemplate(tpl, entity=entity)
+    assert val_tpl.async_render_with_possible_json_value('{"id": 4321}') == "4321"
 
 
 async def test_service_call_without_topic_does_not_publish(hass, mqtt_mock):
@@ -260,6 +397,20 @@ async def test_service_call_with_template_payload_renders_template(hass, mqtt_mo
     )
     assert mqtt_mock.async_publish.called
     assert mqtt_mock.async_publish.call_args[0][1] == "8"
+    mqtt_mock.reset_mock()
+
+    await hass.services.async_call(
+        mqtt.DOMAIN,
+        mqtt.SERVICE_PUBLISH,
+        {
+            mqtt.ATTR_TOPIC: "test/topic",
+            mqtt.ATTR_PAYLOAD_TEMPLATE: "{{ (4+4) | pack('B') }}",
+        },
+        blocking=True,
+    )
+    assert mqtt_mock.async_publish.called
+    assert mqtt_mock.async_publish.call_args[0][1] == b"\x08"
+    mqtt_mock.reset_mock()
 
 
 async def test_service_call_with_bad_template(hass, mqtt_mock):
@@ -313,6 +464,30 @@ async def test_service_call_with_ascii_qos_retain_flags(hass, mqtt_mock):
     assert mqtt_mock.async_publish.called
     assert mqtt_mock.async_publish.call_args[0][2] == 2
     assert not mqtt_mock.async_publish.call_args[0][3]
+
+
+async def test_publish_function_with_bad_encoding_conditions(hass, caplog):
+    """Test internal publish function with bas use cases."""
+    await mqtt.async_publish(
+        hass, "some-topic", "test-payload", qos=0, retain=False, encoding=None
+    )
+    assert (
+        "Can't pass-through payload for publishing test-payload on some-topic with no encoding set, need 'bytes' got <class 'str'>"
+        in caplog.text
+    )
+    caplog.clear()
+    await mqtt.async_publish(
+        hass,
+        "some-topic",
+        "test-payload",
+        qos=0,
+        retain=False,
+        encoding="invalid_encoding",
+    )
+    assert (
+        "Can't encode payload for publishing test-payload on some-topic with encoding invalid_encoding"
+        in caplog.text
+    )
 
 
 def test_validate_topic():
@@ -1358,6 +1533,70 @@ async def test_mqtt_ws_get_device_debug_info(
                     "payload": config,
                     "topic": "homeassistant/sensor/bla/config",
                 },
+                "transmitted": [],
+            }
+        ],
+        "triggers": [],
+    }
+    assert response["result"] == expected_result
+
+
+async def test_mqtt_ws_get_device_debug_info_binary(
+    hass, device_reg, hass_ws_client, mqtt_mock
+):
+    """Test MQTT websocket device debug info."""
+    config = {
+        "device": {"identifiers": ["0AFFD2"]},
+        "platform": "mqtt",
+        "topic": "foobar/image",
+        "unique_id": "unique",
+    }
+    data = json.dumps(config)
+
+    async_fire_mqtt_message(hass, "homeassistant/camera/bla/config", data)
+    await hass.async_block_till_done()
+
+    # Verify device entry is created
+    device_entry = device_reg.async_get_device({("mqtt", "0AFFD2")})
+    assert device_entry is not None
+
+    small_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x04\x00\x00\x00\x04\x08\x06"
+        b"\x00\x00\x00\xa9\xf1\x9e~\x00\x00\x00\x13IDATx\xdac\xfc\xcf\xc0P\xcf\x80\x04"
+        b"\x18I\x17\x00\x00\xf2\xae\x05\xfdR\x01\xc2\xde\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    async_fire_mqtt_message(hass, "foobar/image", small_png)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {"id": 5, "type": "mqtt/device/debug_info", "device_id": device_entry.id}
+    )
+    response = await client.receive_json()
+    assert response["success"]
+    expected_result = {
+        "entities": [
+            {
+                "entity_id": "camera.mqtt_camera",
+                "subscriptions": [
+                    {
+                        "topic": "foobar/image",
+                        "messages": [
+                            {
+                                "payload": str(small_png),
+                                "qos": 0,
+                                "retain": False,
+                                "time": ANY,
+                                "topic": "foobar/image",
+                            }
+                        ],
+                    }
+                ],
+                "discovery_data": {
+                    "payload": config,
+                    "topic": "homeassistant/camera/bla/config",
+                },
+                "transmitted": [],
             }
         ],
         "triggers": [],
@@ -1425,7 +1664,7 @@ async def test_debug_info_multiple_devices(hass, mqtt_mock):
         device = registry.async_get_device({("mqtt", id)})
         assert device is not None
 
-        debug_info_data = await debug_info.info_for_device(hass, device.id)
+        debug_info_data = debug_info.info_for_device(hass, device.id)
         if d["domain"] != "device_automation":
             assert len(debug_info_data["entities"]) == 1
             assert len(debug_info_data["triggers"]) == 0
@@ -1502,7 +1741,7 @@ async def test_debug_info_multiple_entities_triggers(hass, mqtt_mock):
     device_id = config[0]["config"]["device"]["identifiers"][0]
     device = registry.async_get_device({("mqtt", device_id)})
     assert device is not None
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"]) == 2
     assert len(debug_info_data["triggers"]) == 2
 
@@ -1549,7 +1788,7 @@ async def test_debug_info_non_mqtt(hass, device_reg, entity_reg):
 
     assert await async_setup_component(hass, DOMAIN, {DOMAIN: {"platform": "test"}})
 
-    debug_info_data = await debug_info.info_for_device(hass, device_entry.id)
+    debug_info_data = debug_info.info_for_device(hass, device_entry.id)
     assert len(debug_info_data["entities"]) == 0
     assert len(debug_info_data["triggers"]) == 0
 
@@ -1573,7 +1812,7 @@ async def test_debug_info_wildcard(hass, mqtt_mock):
     device = registry.async_get_device({("mqtt", "helloworld")})
     assert device is not None
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) >= 1
     assert {"topic": "sensor/#", "messages": []} in debug_info_data["entities"][0][
         "subscriptions"
@@ -1584,7 +1823,7 @@ async def test_debug_info_wildcard(hass, mqtt_mock):
         dt_utcnow.return_value = start_dt
         async_fire_mqtt_message(hass, "sensor/abc", "123")
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) >= 1
     assert {
         "topic": "sensor/#",
@@ -1619,7 +1858,7 @@ async def test_debug_info_filter_same(hass, mqtt_mock):
     device = registry.async_get_device({("mqtt", "helloworld")})
     assert device is not None
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) >= 1
     assert {"topic": "sensor/#", "messages": []} in debug_info_data["entities"][0][
         "subscriptions"
@@ -1634,7 +1873,7 @@ async def test_debug_info_filter_same(hass, mqtt_mock):
         dt_utcnow.return_value = dt2
         async_fire_mqtt_message(hass, "sensor/abc", "123")
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) == 1
     assert len(debug_info_data["entities"][0]["subscriptions"][0]["messages"]) == 2
     assert {
@@ -1678,7 +1917,7 @@ async def test_debug_info_same_topic(hass, mqtt_mock):
     device = registry.async_get_device({("mqtt", "helloworld")})
     assert device is not None
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) >= 1
     assert {"topic": "sensor/status", "messages": []} in debug_info_data["entities"][0][
         "subscriptions"
@@ -1689,7 +1928,7 @@ async def test_debug_info_same_topic(hass, mqtt_mock):
         dt_utcnow.return_value = start_dt
         async_fire_mqtt_message(hass, "sensor/status", "123", qos=0, retain=False)
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) == 1
     assert {
         "payload": "123",
@@ -1729,7 +1968,7 @@ async def test_debug_info_qos_retain(hass, mqtt_mock):
     device = registry.async_get_device({("mqtt", "helloworld")})
     assert device is not None
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) >= 1
     assert {"topic": "sensor/#", "messages": []} in debug_info_data["entities"][0][
         "subscriptions"
@@ -1742,7 +1981,7 @@ async def test_debug_info_qos_retain(hass, mqtt_mock):
         async_fire_mqtt_message(hass, "sensor/abc", "123", qos=1, retain=True)
         async_fire_mqtt_message(hass, "sensor/abc", "123", qos=2, retain=False)
 
-    debug_info_data = await debug_info.info_for_device(hass, device.id)
+    debug_info_data = debug_info.info_for_device(hass, device.id)
     assert len(debug_info_data["entities"][0]["subscriptions"]) == 1
     assert {
         "payload": "123",

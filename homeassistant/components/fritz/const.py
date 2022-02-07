@@ -2,11 +2,30 @@
 
 from typing import Literal
 
+from fritzconnection.core.exceptions import (
+    FritzActionError,
+    FritzActionFailedError,
+    FritzInternalError,
+    FritzLookUpError,
+    FritzServiceError,
+)
+
+from homeassistant.backports.enum import StrEnum
 from homeassistant.const import Platform
+
+
+class MeshRoles(StrEnum):
+    """Available Mesh roles."""
+
+    NONE = "none"
+    MASTER = "master"
+    SLAVE = "slave"
+
 
 DOMAIN = "fritz"
 
 PLATFORMS = [
+    Platform.BUTTON,
     Platform.BINARY_SENSOR,
     Platform.DEVICE_TRACKER,
     Platform.SENSOR,
@@ -30,11 +49,18 @@ FRITZ_SERVICES = "fritz_services"
 SERVICE_REBOOT = "reboot"
 SERVICE_RECONNECT = "reconnect"
 SERVICE_CLEANUP = "cleanup"
+SERVICE_SET_GUEST_WIFI_PW = "set_guest_wifi_password"
 
 SWITCH_TYPE_DEFLECTION = "CallDeflection"
 SWITCH_TYPE_PORTFORWARD = "PortForward"
 SWITCH_TYPE_WIFINETWORK = "WiFiNetwork"
 
-TRACKER_SCAN_INTERVAL = 30
-
 UPTIME_DEVIATION = 5
+
+FRITZ_EXCEPTIONS = (
+    FritzActionError,
+    FritzActionFailedError,
+    FritzInternalError,
+    FritzServiceError,
+    FritzLookUpError,
+)
